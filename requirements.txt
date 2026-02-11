@@ -1,3 +1,5 @@
 langgraph>=1.0.8
+langchain>=1.2.10
 langchain-openai>=1.1.9
 python-dotenv>=1.2.1
+langfuse>=3.14.0
