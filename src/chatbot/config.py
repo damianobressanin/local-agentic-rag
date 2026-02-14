@@ -1,27 +1,86 @@
-"""Configuration module – loads env vars and exposes the LLM and Langfuse."""
+"""Configuration module – exposes the LLM, embeddings, vector store, and Langfuse.
+
+All settings are loaded via ``AppSettings`` (Pydantic BaseSettings)
+which reads ``.env`` automatically and validates types at startup.
+"""
 
 import logging
 import os
 import urllib.request
+from functools import lru_cache
 
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-load_dotenv()  # reads .env from project root
+from chatbot.models import get_settings
+
+
+def _ensure_langfuse_env() -> None:
+    """Propagate Langfuse settings to ``os.environ``.
+
+    The Langfuse SDK reads ``LANGFUSE_PUBLIC_KEY``, ``LANGFUSE_SECRET_KEY``
+    and ``LANGFUSE_BASE_URL`` directly from the environment.  Since
+    ``pydantic-settings`` loads ``.env`` into the model but does **not**
+    populate ``os.environ``, we bridge the gap here.
+    """
+    s = get_settings()
+    mapping = {
+        "LANGFUSE_PUBLIC_KEY": s.langfuse_public_key,
+        "LANGFUSE_SECRET_KEY": s.langfuse_secret_key,
+        "LANGFUSE_BASE_URL": s.langfuse_base_url,
+    }
+    for key, value in mapping.items():
+        if value and key not in os.environ:
+            os.environ[key] = value
 
 
 # ── LLM ────────────────────────────────────────────────────────
+@lru_cache(maxsize=1)
 def get_llm() -> ChatOpenAI:
     """Return a ChatOpenAI instance pointed at the configured endpoint.
 
-    All settings come from environment variables so switching from
+    All settings come from ``AppSettings`` so switching from
     LMStudio to vLLM (or OpenAI cloud) is just an env change.
     """
+    s = get_settings()
     return ChatOpenAI(
-        base_url=os.environ["LLM_BASE_URL"],
-        model=os.environ["LLM_MODEL"],
-        api_key=os.environ["LLM_API_KEY"],
-        temperature=float(os.environ.get("LLM_TEMPERATURE", "0.7")),
+        base_url=s.llm_base_url,
+        model=s.llm_model,
+        api_key=s.llm_api_key,
+        temperature=s.llm_temperature,
+    )
+
+
+# ── Embeddings ─────────────────────────────────────────────────
+@lru_cache(maxsize=1)
+def get_embeddings() -> OpenAIEmbeddings:
+    """Return an OpenAIEmbeddings instance pointed at the configured endpoint.
+
+    Uses the same OpenAI-compatible pattern as the LLM so you can
+    run the embedding model on LMStudio, vLLM, or OpenAI cloud.
+    """
+    s = get_settings()
+    return OpenAIEmbeddings(
+        base_url=s.embedding_base_url,
+        model=s.embedding_model,
+        api_key=s.llm_api_key,
+        check_embedding_ctx_length=False,  # LMStudio expects plain strings, not token arrays
+    )
+
+
+# ── Vector store (Qdrant) ──────────────────────────────────────
+@lru_cache(maxsize=1)
+def get_vector_store():
+    """Return a QdrantVectorStore connected to the local Qdrant instance."""
+    from langchain_qdrant import QdrantVectorStore
+    from qdrant_client import QdrantClient
+
+    s = get_settings()
+    client = QdrantClient(url=s.qdrant_url)
+
+    return QdrantVectorStore(
+        client=client,
+        collection_name=s.qdrant_collection,
+        embedding=get_embeddings(),
     )
 
 
@@ -52,17 +111,16 @@ def _silence_otel_errors() -> None:
 
 def get_langfuse_handler():
     """Return a Langfuse CallbackHandler if the package, keys, and server are available."""
-    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-    if not public_key or not secret_key:
+    s = get_settings()
+    if not s.langfuse_public_key or not s.langfuse_secret_key:
         return None
 
-    base_url = os.environ.get("LANGFUSE_BASE_URL", "http://localhost:3000")
-    if not _langfuse_server_reachable(base_url):
+    if not _langfuse_server_reachable(s.langfuse_base_url):
         _silence_otel_errors()
         return None
 
     try:
+        _ensure_langfuse_env()
         from langfuse.langchain import CallbackHandler
         return CallbackHandler()
     except Exception:
@@ -71,9 +129,8 @@ def get_langfuse_handler():
 
 def get_langfuse_status() -> tuple[bool, str]:
     """Return (enabled, description) for startup diagnostics."""
-    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-    if not public_key or not secret_key:
+    s = get_settings()
+    if not s.langfuse_public_key or not s.langfuse_secret_key:
         return False, "missing LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY"
 
     try:
@@ -81,11 +138,10 @@ def get_langfuse_status() -> tuple[bool, str]:
     except ImportError:
         return False, "langfuse package not installed"
 
-    base_url = os.environ.get("LANGFUSE_BASE_URL", "http://localhost:3000")
-    if not _langfuse_server_reachable(base_url):
-        return False, f"server unreachable at {base_url}"
+    if not _langfuse_server_reachable(s.langfuse_base_url):
+        return False, f"server unreachable at {s.langfuse_base_url}"
 
-    return True, f"base_url={base_url}"
+    return True, f"base_url={s.langfuse_base_url}"
 
 
 def shutdown_langfuse() -> None:
