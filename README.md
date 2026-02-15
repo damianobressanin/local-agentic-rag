@@ -1,6 +1,7 @@
 # 🔒 Local Agentic RAG
 
-> A fully local, privacy-first Retrieval-Augmented Generation system with an autonomous AI agent that decides **when and what** to retrieve — powered by LangGraph, Qdrant, and any OpenAI-compatible LLM.
+> A local-first, privacy-first Retrieval-Augmented Generation system with an autonomous AI agent that decides **when and what** to retrieve — powered by LangGraph, Qdrant, and an OpenAI-compatible chat endpoint that supports tool calling.
+
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-1.0-green.svg)](https://github.com/langchain-ai/langgraph)
@@ -15,7 +16,7 @@ Most RAG systems blindly retrieve documents on every query. This one doesn't.
 
 **Local Agentic RAG** is a conversational AI assistant where an LLM agent _autonomously decides_ whether to search a local knowledge base or answer from its own knowledge. The retrieval pipeline uses a **4-stage filtering process** (vector search → score threshold → cross-encoder reranking → context cap) to maximize relevance and minimize noise.
 
-Everything runs on your machine — **no data leaves localhost** (when using local models). The architecture is provider-agnostic through an OpenAI-compatible interface: by changing `.env` settings, it should work with different compatible providers and cloud endpoints.
+Everything can run on your machine, and **no data leaves localhost**, as long as the chat model, embedding model, and Langfuse all point to local endpoints. The architecture is OpenAI API–compatible: the chat model and embeddings are instantiated via LangChain’s ChatOpenAI / OpenAIEmbeddings, so switching between a local server (e.g., LM Studio) and OpenAI Cloud is typically a .env change. For agentic RAG, the chat endpoint must implement OpenAI-style tool calling. This is not a universal multi-provider abstraction (Anthropic/Gemini/Bedrock would require different LangChain clients/adapters).
 
 
 ### Why I Built This
@@ -28,11 +29,11 @@ A secondary goal was to **stress-test my new hardware** with real local inferenc
 
 - **Agentic retrieval** — the LLM calls `search_documents` only when relevant, via LangGraph tool-calling
 - **4-stage RAG pipeline** — vector search (Qdrant) → cosine threshold filter → FlashRank cross-encoder reranking → context cap
-- **100% local** — LLM (LM Studio / gpt-oss-20b), embeddings (nomic-embed-text-v1.5), Qdrant, FlashRank — all on-device
-- **Provider-agnostic** — switch to OpenAI/vLLM/Ollama by changing `LLM_BASE_URL` and `LLM_MODEL` in `.env`
-- **Document-agnostic** — the system adapts to any set of documents. During ingestion, a `rag_summary.txt` is auto-generated from the first chunk of each document, giving the agent an overview of what the knowledge base contains. This lets the LLM make informed decisions about _when_ to search (only if relevant data exists) and avoids wasteful retrievals on topics not covered by the indexed documents
+- **Can run 100% local** — LLM (LM Studio / gpt-oss-20b), embeddings (nomic-embed-text-v1.5), Qdrant, FlashRank — all on-device (tested in this configuration)
+- **OpenAI-compatible backend** — developed and tested with LM Studio. You can point the LLM to OpenAI Cloud by changing LLM_BASE_URL, LLM_MODEL, and LLM_API_KEY in .env. Other OpenAI-compatible servers (e.g., vLLM) should work if they support OpenAI-style tool calling (required for agentic retrieval)
+- **Domain-agnostic** — the system supports unrelated documents. During ingestion, a `rag_summary.txt` is auto-generated from a first page chunk of each document, giving the agent an overview of what the knowledge base contains. This lets the LLM make informed decisions about _when_ to search (when relevant data is likely to exist) and avoids wasteful retrievals on topics not covered by the indexed documents
 - **Observable** — optional Langfuse integration for tracing every agent decision and retrieval step
-- **Document management CLI** — ingest, list, and delete documents with deduplication and auto-generated knowledge base summaries
+- **Document management CLI** — ingest, list, and delete documents with deduplication by source path and auto-generated knowledge base summaries
 
 ---
 
@@ -89,10 +90,10 @@ A secondary goal was to **stress-test my new hardware** with real local inferenc
 | Component | Technology | Role |
 |---|---|---|
 | Agent orchestration | **LangGraph** (StateGraph + ToolNode) | Reactive loop with conditional tool-calling |
-| LLM | **gpt-oss-20b** via LM Studio (any OpenAI-compatible API) | Chat completions with tool use. This is a Mixture-of-Experts (MoE) model that activates fewer parameters during inference, fitting in 16 GB VRAM (the model has 21B total parameters with only 3.6B active at a time). Replaceable with any LLM that supports tool-calling |
+| LLM | **gpt-oss-20b** via LM Studio (OpenAI-compatible API) | Chat completions with tool use. This is a Mixture-of-Experts (MoE) model that activates fewer parameters during inference, fitting in 16 GB VRAM (the model has 21B total parameters with only 3.6B active at a time). Replaceable with any **OpenAI-compatible chat endpoint that supports tool calling** |
 | Embeddings | **nomic-embed-text-v1.5** (768d) | Dense vector representations |
 | Vector database | **Qdrant** (local, persistent storage) | Similarity search with cosine distance |
-| Reranking | **FlashRank** (CPU cross-encoder) | Listwise reranking to improve precision |
+| Reranking | **FlashRank** (CPU cross-encoder) | Reranking to improve precision |
 | Configuration | **Pydantic Settings** | Validated, type-safe `.env` loading |
 | Observability | **Langfuse** (optional, self-hosted) | Tracing agent decisions, latencies, token usage |
 | Document loading | LangChain `PyPDFLoader` + `TextLoader` | PDF and plain text ingestion |
@@ -109,7 +110,7 @@ local-agentic-rag/
 ├── rag_summary.txt          # Auto-generated KB summary (used in system prompt)
 ├── requirements.txt         # Python dependencies
 ├── .env.example             # Configuration template
-├── rag_documents/           # Drop your PDFs and TXT files here
+├── rag_documents/           # Drop your PDFs and TXT files here (create if missing)
 ├── qdrant_storage/          # Qdrant persistent data (auto-generated)
 └── src/chatbot/
     ├── config.py            # Factory singletons (LLM, embeddings, vector store, Langfuse)
@@ -162,8 +163,8 @@ docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant
 ### 4. Ingest documents
 
 ```bash
-# Place your PDF/TXT files in rag_documents/
-python ingest.py ingest    # Embed and store (skips duplicates)
+# Place your PDF/TXT files in rag_documents/ (create if missing)
+python ingest.py ingest    # Embed and store (skips duplicates by source path; if a file changes, delete and re-ingest)
 python ingest.py list      # Verify what's indexed
 ```
 
@@ -197,6 +198,9 @@ AI: According to the NASA Systems Engineering Handbook...
 
 To switch the **LLM only** (keep local embeddings + existing Qdrant data), just update `.env`:
 
+> **Note:** Your LLM endpoint must support OpenAI-style tool calling.
+
+
 ```env
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=your-model-here
@@ -222,7 +226,7 @@ EMBEDDING_MODEL=text-embedding-3-small
 > python ingest.py ingest          # re-embed with the new model
 > ```
 
-> **Note on embeddings compatibility:** the embedding client uses `check_embedding_ctx_length=False` ([config.py](src/chatbot/config.py)) because local servers like LM Studio expect plain text strings, not pre-tokenized arrays. This setting is also compatible with OpenAI cloud — the only difference is that automatic client-side truncation is disabled, which is a non-issue here since chunks are well under the embedding model's context limit (1000 chars vs 8192 tokens).
+> **Note on embeddings compatibility:** `check_embedding_ctx_length=False` ([config.py](src/chatbot/config.py)) disables client-side token-length checking/auto-splitting; chunks are small and inputs are sent as **strings** for maximum OpenAI-compatible endpoint compatibility.
 
 ---
 
@@ -237,7 +241,7 @@ All settings are loaded from `.env` and validated at startup via Pydantic Settin
 | `LLM_API_KEY` | no | `lm-studio` | API key for the LLM provider |
 | `LLM_TEMPERATURE` | no | `0.7` | Sampling temperature (0–2) |
 | `EMBEDDING_BASE_URL` | no | `http://127.0.0.1:1234/v1` | Embedding model endpoint |
-| `EMBEDDING_MODEL` | no | `nomic-embed-text-v1.5@f32` | Embedding model name |
+| `EMBEDDING_MODEL` | no | `text-embedding-nomic-embed-text-v1.5@f32` | Embedding model name |
 | `QDRANT_URL` | no | `http://localhost:6333` | Qdrant server URL |
 | `QDRANT_COLLECTION` | no | `rag_documents` | Qdrant collection name |
 | `RAG_RETRIEVAL_K` | no | `12` | Chunks retrieved from vector search before filtering |
@@ -250,12 +254,14 @@ All settings are loaded from `.env` and validated at startup via Pydantic Settin
 | `LANGFUSE_BASE_URL` | no | `http://localhost:3000` | Langfuse server URL |
 | `CHAT_SESSION_ID` | no | _(random)_ | Fixed session ID (useful for Langfuse grouping) |
 
+**Note:** LLM_API_KEY is currently reused for the embeddings client as well (see get_embeddings() in src/chatbot/config.py). If your embedding endpoint requires a different key, you’ll need a small code change (e.g., add EMBEDDING_API_KEY).
+
 ---
 
 ## How the RAG Pipeline Works
 
 1. **Vector search** — the query is embedded with nomic-embed-text-v1.5 and matched against Qdrant (top-k=12 by cosine similarity)
-2. **Score threshold** — chunks below 0.65 cosine similarity are discarded (dense models have a ~0.55–0.60 baseline for unrelated text)
+2. **Score threshold** — chunks below 0.65 cosine similarity are discarded (0.65 is a heuristic that worked well for the default embedding model/corpus; tune as needed)
 3. **Cross-encoder reranking** — FlashRank (a lightweight, CPU-only cross-encoder) re-scores the surviving chunks and keeps the top 6
 4. **Context cap** — at most 4 chunks are passed to the LLM, each tagged with `[Source: filename, Page N]` for citation
 
