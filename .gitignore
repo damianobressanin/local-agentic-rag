@@ -40,3 +40,7 @@ rag_summary.txt
 
 # Conda environment file
 environment.yml
+
+# FlashRank model files (large, downloaded via setup script)
+# Uncomment the next line if you do NOT want to commit the model to git.
+models/*

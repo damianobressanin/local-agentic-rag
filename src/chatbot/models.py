@@ -98,6 +98,18 @@ class AppSettings(BaseSettings):
         default=True,
         description="Whether to log per-chunk retrieval/rerank/filter decisions.",
     )
+    flashrank_cache_dir: str = Field(
+        default="models/flashrank",
+        description=(
+            "Directory containing the pre-downloaded FlashRank reranker model. "
+            "Relative paths are resolved from the project root. "
+            "Run the setup script once while online to populate this directory."
+        ),
+    )
+    flashrank_model: str = Field(
+        default="ms-marco-MultiBERT-L-12",
+        description="FlashRank model name (must exist inside flashrank_cache_dir).",
+    )
 
     # ── Langfuse (optional) ─────────────────────────────────────
     langfuse_public_key: str | None = Field(

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_core.tools import tool
 
 from chatbot.config import get_vector_store
 from chatbot.models import SearchDocumentsInput, get_settings
+
+# Resolve project root (parent of src/)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # ANSI colors for terminal output
 _DIM = "\033[2m"
@@ -45,17 +49,41 @@ def _one_indexed_page(page: object) -> int | None:
 def _rerank_documents(query: str, docs: list[Document], top_n: int) -> list[Document]:
     """Rerank retrieved chunks using FlashRank (local cross-encoder).
 
-    FlashRank runs entirely on CPU with a tiny model (~4 MB default,
-    ~34 MB for the higher-quality ``ms-marco-MiniLM-L-12-v2``).
-    Falls back to retrieval order if FlashRank is not installed or fails.
+    The model is loaded from a **local, pre-downloaded** directory
+    (``models/flashrank/`` by default) so that no network access is
+    ever required — not even on first boot.
+
+    Falls back to retrieval order if FlashRank is not installed or
+    the model files are missing.
     """
     if not docs:
         return []
 
     try:
+        from flashrank import Ranker
         from langchain_community.document_compressors import FlashrankRerank
 
-        reranker = FlashrankRerank(top_n=top_n)
+        s = get_settings()
+
+        # Resolve cache_dir: support both absolute and project-relative paths
+        cache_path = Path(s.flashrank_cache_dir)
+        if not cache_path.is_absolute():
+            cache_path = _PROJECT_ROOT / cache_path
+
+        model_path = cache_path / s.flashrank_model
+        if not model_path.is_dir():
+            _log(
+                "⚠️",
+                f"{_YELLOW}FlashRank model not found at {model_path}. "
+                f"Run the setup script to download it. Using retrieval-order fallback.{_RESET}",
+            )
+            return docs[:top_n]
+
+        ranker = Ranker(
+            model_name=s.flashrank_model,
+            cache_dir=str(cache_path),
+        )
+        reranker = FlashrankRerank(client=ranker, top_n=top_n)
         reranked = reranker.compress_documents(documents=docs, query=query)
         _log("🧭", f"FlashRank reranked {_GREEN}{len(docs)}{_RESET}{_DIM} → {_GREEN}{len(reranked)}{_RESET}{_DIM} chunk(s)")
         return list(reranked)

@@ -145,7 +145,15 @@ conda create -n local-agentic-rag-env python=3.12 -y
 conda activate local-agentic-rag-env
 
 pip install -r requirements.txt
+
+# Download the FlashRank reranker model for offline use (one-time, ~100 MB)
+python -c "from flashrank import Ranker; Ranker(model_name='ms-marco-MultiBERT-L-12', cache_dir='models/flashrank')"
 ```
+
+> **Offline note:** the command above downloads the FlashRank cross-encoder model
+> into `models/flashrank/` so the app never needs internet access at runtime.
+> After this step, the project works fully **air-gapped** — LLM, embeddings,
+> Qdrant, and FlashRank all run locally.
 
 ### 2. Configure
 
@@ -153,6 +161,12 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your LLM server URL and model name
 ```
+
+> **VS Code users:** enable `python.terminal.useEnvFile` in your settings (`Ctrl+,`) at the workspace level so that
+> variables from `.env` (especially `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`) are
+> automatically injected into the integrated terminal. Without this, only Pydantic Settings
+> reads the file — external libraries that check `os.environ` directly (e.g. `huggingface-hub`)
+> won't see the offline flags.
 
 ### 3. Start Qdrant
 
